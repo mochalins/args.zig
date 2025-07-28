@@ -1,0 +1,12 @@
+.{
+    .name = .args,
+    .fingerprint = 0x161b2ea2480f6acd,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.15.0-dev.1270+89cd42ee8",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "LICENSE",
+    },
+}
