@@ -2,13 +2,18 @@ const std = @import("std");
 
 pub fn Args(
     T: type,
-    options: struct {
+    comptime options: struct {
         /// Stop parsing on encountering a separator (default "--").
         /// Caller may directly step through remaining `iterator` to retrieve
         /// arguments provided after the separator.
         /// The `iterator` may also be subsequently used to parse a different
         /// command (subcommand).
-        comptime separators: type = enum { @"--" },
+        separators: type = enum { @"--" },
+        /// Maximum number of positionals that can be parsed. If a maximum is
+        /// specified, then positionals will be stored in a buffer rather than
+        /// requiring an allocated slice.
+        /// By default, unlimited.
+        max_positionals: ?comptime_int = null,
     },
 ) type {
     return struct {
@@ -17,7 +22,11 @@ pub fn Args(
         /// Set of fields in `options` that have been parsed and filled.
         filled: std.EnumSet(OptionField),
         /// Parsed positional parameters.
-        positionals: [][]const u8 = &.{},
+        positionals: [][]const u8,
+        _positionals_buffer: if (options.max_positionals) |max|
+            [max][]const u8
+        else
+            void = undefined,
 
         pub const OptionField = std.meta.FieldEnum(T);
         pub const Separator = options.separators;
@@ -28,6 +37,7 @@ pub fn Args(
             var result: Self = .{
                 .options = undefined,
                 .filled = .initEmpty(),
+                .positionals = &.{},
             };
             const ti = @typeInfo(T).@"struct";
             inline for (ti.fields) |field| {
@@ -45,8 +55,10 @@ pub fn Args(
         }
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            if (self.positionals.len > 0) {
-                allocator.free(self.positionals);
+            if (comptime options.max_positionals == null) {
+                if (self.positionals.len > 0) {
+                    allocator.free(self.positionals);
+                }
             }
             self.* = undefined;
         }
@@ -64,6 +76,10 @@ pub fn Args(
                 diagnostics: ?*Diagnostics(T) = null,
             },
         ) !?Separator {
+            if (comptime options.max_positionals) |max| {
+                if (self.positionals.len >= max) return null;
+            }
+
             const OptionsMap = if (comptime @TypeOf(options_map) == type)
                 options_map
             else
@@ -72,7 +88,9 @@ pub fn Args(
             const options_ti = @typeInfo(T).@"struct";
 
             var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
-            errdefer positionals.deinit(allocator);
+            if (comptime options.max_positionals != null) {
+                errdefer positionals.deinit(allocator);
+            }
 
             var raw_arg: []const u8 = "";
             const ret = parse_loop: while (true) {
@@ -243,20 +261,32 @@ pub fn Args(
 
                 // Parse positional
                 else {
-                    try positionals.append(allocator, raw_arg);
+                    if (comptime options.max_positionals) |max| {
+                        const buf = &self._positionals_buffer;
+                        buf[self.positionals.len] = raw_arg;
+                        self.positionals = buf[0 .. self.positionals.len + 1];
+                        if (self.positionals.len == max) {
+                            return null;
+                        }
+                    } else {
+                        try positionals.append(allocator, raw_arg);
+                    }
                 }
             };
 
-            const old_len = self.positionals.len;
-            if (old_len > 0) {
-                self.positionals = try allocator.realloc(
-                    self.positionals,
-                    old_len + positionals.items.len,
-                );
-                @memcpy(self.positionals[old_len..], positionals.items);
-                positionals.deinit(allocator);
-            } else {
-                self.positionals = try positionals.toOwnedSlice(allocator);
+            if (comptime options.max_positionals == null) {
+                const old_len = self.positionals.len;
+                if (old_len > 0) {
+                    self.positionals = try allocator.realloc(
+                        self.positionals,
+                        old_len + positionals.items.len,
+                    );
+                    @memcpy(self.positionals[old_len..], positionals.items);
+                    positionals.deinit(allocator);
+                } else {
+                    self.positionals =
+                        try positionals.toOwnedSlice(allocator);
+                }
             }
 
             return ret;
@@ -329,11 +359,28 @@ test "initialization" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{}) = .init();
-    defer parsed.deinit(allocator);
+    { // Unlimited positionals.
+        var parsed: Args(MyOpts, .{}) = .init();
+        defer parsed.deinit(allocator);
 
-    try std.testing.expect(parsed.filled.contains(.optional_flag));
-    try std.testing.expect(!parsed.filled.contains(.required_string));
+        try std.testing.expect(parsed.filled.contains(.optional_flag));
+        try std.testing.expect(!parsed.filled.contains(.required_string));
+        try std.testing.expectEqual(
+            void,
+            @TypeOf(parsed._positionals_buffer),
+        );
+        try std.testing.expectEqual(0, parsed.positionals.len);
+    }
+
+    { // Limited positionals.
+        var parsed: Args(MyOpts, .{ .max_positionals = 2 }) = .init();
+        defer parsed.deinit(allocator);
+
+        try std.testing.expect(parsed.filled.contains(.optional_flag));
+        try std.testing.expect(!parsed.filled.contains(.required_string));
+        try std.testing.expectEqual(2, parsed._positionals_buffer.len);
+        try std.testing.expectEqual(0, parsed.positionals.len);
+    }
 }
 
 test "unknown option parsing error" {
@@ -391,7 +438,7 @@ test "short flag parsing" {
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "-o", ' ');
-    const separator = parsed.parse(struct {
+    const separator = try parsed.parse(struct {
         const optional_flag = struct {
             const short = 'o';
         };
@@ -414,7 +461,7 @@ test "short option boolean value parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "-o=true", ' ');
-        const separator = parsed.parse(struct {
+        const separator = try parsed.parse(struct {
             const optional_flag = struct {
                 const short = 'o';
             };
@@ -433,7 +480,7 @@ test "short option boolean value parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "-o=false", ' ');
-        const separator = parsed.parse(struct {
+        const separator = try parsed.parse(struct {
             const optional_flag = struct {
                 const short = 'o';
             };
@@ -457,7 +504,7 @@ test "long flag parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long", ' ');
-        const separator = parsed.parse(struct {
+        const separator = try parsed.parse(struct {
             const optional_flag = struct {
                 const long = "custom_long";
             };
@@ -481,7 +528,7 @@ test "long option boolean value parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long=true", ' ');
-        const separator = parsed.parse(struct {
+        const separator = try parsed.parse(struct {
             const optional_flag = struct {
                 const long = "custom_long";
             };
@@ -501,7 +548,7 @@ test "long option boolean value parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long=false", ' ');
-        const separator = parsed.parse(struct {
+        const separator = try parsed.parse(struct {
             const optional_flag = struct {
                 const long = "custom_long";
             };
@@ -523,7 +570,7 @@ test "short option string parsing" {
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "-r foo", ' ');
-    const separator = parsed.parse(struct {
+    const separator = try parsed.parse(struct {
         const required_string = struct {
             const short = 'r';
         };
@@ -535,4 +582,44 @@ test "short option string parsing" {
         "foo",
         parsed.options.required_string,
     );
+}
+
+test "allocated positionals" {
+    const allocator = std.testing.allocator;
+    const MyOpts = struct {
+        optional_flag: bool = false,
+        required_string: []const u8,
+    };
+
+    var parsed: Args(MyOpts, .{}) = .init();
+    defer parsed.deinit(allocator);
+
+    var args = std.mem.splitScalar(u8, "foo bar baz", ' ');
+    const separator = try parsed.parse({}, std.testing.allocator, &args, .{});
+
+    try std.testing.expectEqual(null, separator);
+    try std.testing.expectEqual(3, parsed.positionals.len);
+    try std.testing.expectEqualStrings("foo", parsed.positionals[0]);
+    try std.testing.expectEqualStrings("bar", parsed.positionals[1]);
+    try std.testing.expectEqualStrings("baz", parsed.positionals[2]);
+}
+
+test "buffered positionals" {
+    const allocator = std.testing.allocator;
+    const MyOpts = struct {
+        optional_flag: bool = false,
+        required_string: []const u8,
+    };
+
+    var parsed: Args(MyOpts, .{ .max_positionals = 3 }) = .init();
+    defer parsed.deinit(allocator);
+
+    var args = std.mem.splitScalar(u8, "foo bar baz", ' ');
+    const separator = try parsed.parse({}, std.testing.allocator, &args, .{});
+
+    try std.testing.expectEqual(null, separator);
+    try std.testing.expectEqual(3, parsed.positionals.len);
+    try std.testing.expectEqualStrings("foo", parsed.positionals[0]);
+    try std.testing.expectEqualStrings("bar", parsed.positionals[1]);
+    try std.testing.expectEqualStrings("baz", parsed.positionals[2]);
 }
