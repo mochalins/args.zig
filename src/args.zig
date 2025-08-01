@@ -16,24 +16,14 @@ pub fn Args(
         max_positionals: ?comptime_int = null,
     },
 ) type {
-    return struct {
-        /// Parsed option results.
-        options: T,
-        /// Set of fields in `options` that have been parsed and filled.
-        filled: std.EnumSet(OptionField),
-        /// Parsed positional parameters.
-        positionals: [][]const u8,
-        _positionals_buffer: if (options.max_positionals) |max|
-            [max][]const u8
-        else
-            void = undefined,
+    const Inner = struct {
+        const Separator = options.separators;
+        const OptionField = std.meta.FieldEnum(T);
+        const ParseOptions = struct {
+            diagnostics: ?*Diagnostics(T) = null,
+        };
 
-        pub const OptionField = std.meta.FieldEnum(T);
-        pub const Separator = options.separators;
-
-        const Self = @This();
-
-        pub fn init() Self {
+        pub fn init(Self: type) Self {
             var result: Self = .{
                 .options = undefined,
                 .filled = .initEmpty(),
@@ -54,27 +44,16 @@ pub fn Args(
             return result;
         }
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            if (comptime options.max_positionals == null) {
-                if (self.positionals.len > 0) {
-                    allocator.free(self.positionals);
-                }
-            }
-            self.* = undefined;
-        }
-
         pub fn parse(
-            self: *Self,
-            /// Any container (struct, union, enum) type or instantiation containing
-            /// fields/declarations with the same names as fields in `T`.
+            self: anytype,
+            /// Any container (struct, union, enum) type or instantiation
+            /// containing fields/delcs with the same names as fields in `T`.
             options_map: anytype,
             allocator: std.mem.Allocator,
-            /// Any iterator providing arguments. If using `std.process.ArgIterator`,
-            /// skip the executable name that appears as the first argument.
+            /// Arguments iterator. If using `std.process.ArgIterator`, skip
+            /// the executable name that appears as the first argument.
             iterator: anytype,
-            opts: struct {
-                diagnostics: ?*Diagnostics(T) = null,
-            },
+            opts: ParseOptions,
         ) !?Separator {
             if (comptime options.max_positionals) |max| {
                 if (self.positionals.len >= max) return null;
@@ -98,9 +77,9 @@ pub fn Args(
                 if (raw_arg.len == 0) continue :parse_loop;
 
                 // Check separators.
-                inline for (@typeInfo(Separator).@"enum".fields) |separator| {
-                    if (std.mem.eql(u8, separator.name, raw_arg)) {
-                        break :parse_loop @field(Separator, separator.name);
+                inline for (@typeInfo(Separator).@"enum".fields) |val| {
+                    if (std.mem.eql(u8, val.name, raw_arg)) {
+                        break :parse_loop @field(Separator, val.name);
                     }
                 }
 
@@ -292,6 +271,89 @@ pub fn Args(
             return ret;
         }
     };
+
+    const NoAllocator = struct {
+        /// Parsed option results.
+        options: T,
+        /// Set of fields in `options` that have been parsed and filled.
+        filled: std.EnumSet(OptionField),
+        /// Parsed positional parameters.
+        positionals: [][]const u8,
+        _positionals_buffer: if (options.max_positionals) |max|
+            [max][]const u8
+        else
+            void = undefined,
+
+        pub const OptionField = Inner.OptionField;
+        pub const Separator = Inner.Separator;
+        pub const ParseOptions = Inner.ParseOptions;
+
+        const Self = @This();
+
+        pub fn init() Self {
+            return Inner.init(Self);
+        }
+
+        pub fn parse(
+            self: *Self,
+            /// Any container (struct, union, enum) type or instantiation
+            /// containing fields/decls with the same names as fields in `T`.
+            options_map: anytype,
+            /// Arguments iterator. If using `std.process.ArgIterator`, skip
+            /// the executable name that appears as the first argument.
+            iterator: anytype,
+            opts: ParseOptions,
+        ) !?Separator {
+            return Inner.parse(self, options_map, undefined, iterator, opts);
+        }
+    };
+
+    const NeedsAllocator = struct {
+        /// Parsed option results.
+        options: T,
+        /// Set of fields in `options` that have been parsed and filled.
+        filled: std.EnumSet(OptionField),
+        /// Parsed positional parameters.
+        positionals: [][]const u8,
+
+        pub const OptionField = Inner.OptionField;
+        pub const Separator = Inner.Separator;
+        pub const ParseOptions = Inner.ParseOptions;
+
+        const Self = @This();
+
+        pub fn init() Self {
+            return Inner.init(Self);
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            if (comptime options.max_positionals == null) {
+                if (self.positionals.len > 0) {
+                    allocator.free(self.positionals);
+                }
+            }
+            self.* = undefined;
+        }
+
+        pub fn parse(
+            self: *Self,
+            /// Any container (struct, union, enum) type or instantiation
+            /// containing fields/decls with the same names as fields in `T`.
+            options_map: anytype,
+            allocator: std.mem.Allocator,
+            /// Arguments iterator. If using `std.process.ArgIterator`, skip
+            /// the executable name that appears as the first argument.
+            iterator: anytype,
+            opts: ParseOptions,
+        ) !?Separator {
+            return Inner.parse(self, options_map, allocator, iterator, opts);
+        }
+    };
+
+    return if (options.max_positionals == null or needsAllocator(T))
+        NeedsAllocator
+    else
+        NoAllocator;
 }
 
 const ParseError = error{
@@ -326,8 +388,8 @@ fn parseValue(T: type, value_string: []const u8) !T {
             const child_ti = @typeInfo(opt.child);
             break :val_parse child_ti;
         },
-        .pointer => |pointer| {
-            if (pointer.size == .slice and pointer.child == u8) {
+        .pointer => |_| {
+            if (T == []const u8) {
                 return value_string;
             } else break :val_parse .void;
         },
@@ -351,6 +413,23 @@ pub fn Diagnostics(T: type) type {
     };
 }
 
+fn needsAllocator(T: type) bool {
+    const ti = @typeInfo(T).@"struct";
+    inline for (ti.fields) |field| {
+        const field_ti = @typeInfo(field.type);
+        switch (field_ti) {
+            .pointer => {
+                if (field.type == []const u8) {
+                    comptime continue;
+                }
+                return true;
+            },
+            else => comptime continue,
+        }
+    }
+    return false;
+}
+
 test "initialization" {
     const allocator = std.testing.allocator;
 
@@ -365,16 +444,11 @@ test "initialization" {
 
         try std.testing.expect(parsed.filled.contains(.optional_flag));
         try std.testing.expect(!parsed.filled.contains(.required_string));
-        try std.testing.expectEqual(
-            void,
-            @TypeOf(parsed._positionals_buffer),
-        );
         try std.testing.expectEqual(0, parsed.positionals.len);
     }
 
     { // Limited positionals.
         var parsed: Args(MyOpts, .{ .max_positionals = 2 }) = .init();
-        defer parsed.deinit(allocator);
 
         try std.testing.expect(parsed.filled.contains(.optional_flag));
         try std.testing.expect(!parsed.filled.contains(.required_string));
@@ -605,17 +679,15 @@ test "allocated positionals" {
 }
 
 test "buffered positionals" {
-    const allocator = std.testing.allocator;
     const MyOpts = struct {
         optional_flag: bool = false,
         required_string: []const u8,
     };
 
     var parsed: Args(MyOpts, .{ .max_positionals = 3 }) = .init();
-    defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "foo bar baz", ' ');
-    const separator = try parsed.parse({}, std.testing.allocator, &args, .{});
+    const separator = try parsed.parse({}, &args, .{});
 
     try std.testing.expectEqual(null, separator);
     try std.testing.expectEqual(3, parsed.positionals.len);
