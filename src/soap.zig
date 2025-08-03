@@ -134,25 +134,37 @@ pub fn Soap(
 
                             const FieldType = @FieldType(T, field.name);
 
-                            // Handle value provided after '='.
+                            // Handle value(s) provided after '='.
                             if (end < remaining.len - 1 and
                                 remaining[end] == '=')
                             {
-                                const value_end = std.mem.indexOfScalarPos(
-                                    u8,
-                                    remaining,
-                                    end + 1,
-                                    ',',
-                                ) orelse remaining.len;
-                                const value = remaining[end + 1 .. value_end];
-                                try parseValue(
-                                    &@field(self.options, field.name),
-                                    allocator,
-                                    value,
-                                );
-                                const rem_start =
-                                    @min(value_end + 1, remaining.len);
-                                remaining = remaining[rem_start..];
+                                var start = end + 1;
+                                while (remaining.len > 0) {
+                                    const field_ti = @typeInfo(FieldType);
+                                    const value_end =
+                                        if (comptime field_ti == .pointer and
+                                        field_ti.pointer.size == .slice and
+                                        FieldType != []const u8)
+                                            std.mem.indexOfScalarPos(
+                                                u8,
+                                                remaining,
+                                                start,
+                                                ',',
+                                            ) orelse remaining.len
+                                        else
+                                            remaining.len;
+                                    const value =
+                                        remaining[start..value_end];
+                                    try parseValue(
+                                        &@field(self.options, field.name),
+                                        allocator,
+                                        value,
+                                    );
+                                    const rem_start =
+                                        @min(value_end + 1, remaining.len);
+                                    remaining = remaining[rem_start..];
+                                    start = 0;
+                                }
                             }
                             // Handle boolean flag with no value string.
                             else if (FieldType == bool) {
@@ -216,28 +228,38 @@ pub fn Soap(
 
                             const FieldType = @FieldType(T, field.name);
 
-                            // Handle value provided through '='; must last
-                            // short option in combined, or terminated with a
-                            // comma.
+                            // Handle value provided through '='; must be last
+                            // short option in combined.
                             // E.g.
                             //   -abc=foo
-                            //   -ab=foo,c=bar,d
+                            //   -abc=foo1,foo2,foo3
                             if (args.len > 2 and i < args.len - 2 and
                                 args[i + 1] == '=')
                             {
-                                const end = std.mem.indexOfScalarPos(
-                                    u8,
-                                    args,
-                                    i + 2,
-                                    ',',
-                                ) orelse args.len;
-                                const value = args[i + 2 .. end];
-                                try parseValue(
-                                    &@field(self.options, field.name),
-                                    allocator,
-                                    value,
-                                );
-                                i = end;
+                                var start = i + 2;
+                                while (i < args.len) {
+                                    const field_ti = @typeInfo(FieldType);
+                                    const end =
+                                        if (comptime field_ti == .pointer and
+                                        field_ti.pointer.size == .slice and
+                                        FieldType != []const u8)
+                                            std.mem.indexOfScalarPos(
+                                                u8,
+                                                args,
+                                                start,
+                                                ',',
+                                            ) orelse args.len
+                                        else
+                                            args.len;
+                                    const value = args[start..end];
+                                    try parseValue(
+                                        &@field(self.options, field.name),
+                                        allocator,
+                                        value,
+                                    );
+                                    i = end + 1;
+                                    start = i;
+                                }
                             }
                             // Handle boolean flag with no value string.
                             else if (FieldType == bool) {
@@ -826,7 +848,7 @@ test "combined short options" {
 
     var parsed: Soap(MyOpts, .{ .max_positionals = 1 }) = .init();
 
-    var args = std.mem.splitScalar(u8, "-a=true,o foo", ' ');
+    var args = std.mem.splitScalar(u8, "-ao foo", ' ');
     const separator = try parsed.parse(struct {
         const flag1 = struct {
             const short = 'a';
@@ -854,7 +876,7 @@ test "combined long options" {
 
     var parsed: Soap(MyOpts, .{ .max_positionals = 1 }) = .init();
 
-    var args = std.mem.splitScalar(u8, "--flag1=true,opt foo", ' ');
+    var args = std.mem.splitScalar(u8, "--flag1,opt foo", ' ');
     const separator = try parsed.parse(struct {
         const flag1 = struct {
             const long = "flag1";
@@ -884,7 +906,7 @@ test "long option slice multiple redeclaration" {
 
     var args = std.mem.splitScalar(
         u8,
-        "--flags=true,opt foo --flags=false --opt=bar ",
+        "--flags=true,true --opt foo --flags false --opt=bar ",
         ' ',
     );
     const separator = try parsed.parse(struct {
@@ -900,9 +922,10 @@ test "long option slice multiple redeclaration" {
     }, std.testing.allocator, &args, .{});
 
     try std.testing.expectEqual(null, separator);
-    try std.testing.expectEqual(2, parsed.options.flags.len);
+    try std.testing.expectEqual(3, parsed.options.flags.len);
     try std.testing.expect(parsed.options.flags[0]);
-    try std.testing.expect(!parsed.options.flags[1]);
+    try std.testing.expect(parsed.options.flags[1]);
+    try std.testing.expect(!parsed.options.flags[2]);
     try std.testing.expectEqual(2, parsed.options.options.len);
     try std.testing.expectEqualStrings("foo", parsed.options.options[0]);
     try std.testing.expectEqualStrings("bar", parsed.options.options[1]);
