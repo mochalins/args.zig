@@ -128,15 +128,18 @@ pub fn Soap(
                             if (end < remaining.len - 1 and
                                 remaining[end] == '=')
                             {
-                                const value_end = std.mem.indexOfScalar(
+                                const value_end = std.mem.indexOfScalarPos(
                                     u8,
-                                    remaining[end + 1 ..],
+                                    remaining,
+                                    end + 1,
                                     ',',
                                 ) orelse remaining.len;
                                 const value = remaining[end + 1 .. value_end];
                                 @field(self.options, field.name) =
                                     try parseValue(FieldType, value);
-                                remaining = remaining[value_end..];
+                                const rem_start =
+                                    @min(value_end + 1, remaining.len);
+                                remaining = remaining[rem_start..];
                             }
                             // Handle boolean flag with no value string.
                             else if (FieldType == bool) {
@@ -745,6 +748,34 @@ test "combined short options" {
         };
         const option = struct {
             const short = 'o';
+        };
+    }, &args, .{});
+
+    try std.testing.expectEqual(null, separator);
+    try std.testing.expect(parsed.options.flag1);
+    try std.testing.expect(!parsed.options.flag2);
+    try std.testing.expectEqualStrings("foo", parsed.options.option);
+}
+
+test "combined long options" {
+    const MyOpts = struct {
+        flag1: bool = false,
+        flag2: bool = false,
+        option: []const u8,
+    };
+
+    var parsed: Soap(MyOpts, .{ .max_positionals = 1 }) = .init();
+
+    var args = std.mem.splitScalar(u8, "--flag1=true,opt foo", ' ');
+    const separator = try parsed.parse(struct {
+        const flag1 = struct {
+            const long = "flag1";
+        };
+        const flag2 = struct {
+            const long = "flag2";
+        };
+        const option = struct {
+            const long = "opt";
         };
     }, &args, .{});
 
