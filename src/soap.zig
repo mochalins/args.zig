@@ -38,6 +38,15 @@ pub fn Soap(
                 }
                 if (comptime field.is_comptime) {
                     result.filled.insert(@field(OptionField, field.name));
+                    comptime continue;
+                }
+
+                // Initialize slices to empty so they can be `realloc`ed.
+                const field_ti = @typeInfo(field.type);
+                if (field_ti == .pointer and
+                    field_ti.pointer.size == .slice)
+                {
+                    @field(result.options, field.name) = &.{};
                 }
             }
 
@@ -49,6 +58,7 @@ pub fn Soap(
             /// Any container (struct, union, enum) type or instantiation
             /// containing fields/delcs with the same names as fields in `T`.
             options_map: anytype,
+            comptime needs_allocator: bool,
             allocator: std.mem.Allocator,
             /// Arguments iterator. If using `std.process.ArgIterator`, skip
             /// the executable name that appears as the first argument.
@@ -67,7 +77,7 @@ pub fn Soap(
             const options_ti = @typeInfo(T).@"struct";
 
             var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
-            if (comptime options.max_positionals != null) {
+            if (comptime needs_allocator) {
                 errdefer positionals.deinit(allocator);
             }
 
@@ -135,8 +145,11 @@ pub fn Soap(
                                     ',',
                                 ) orelse remaining.len;
                                 const value = remaining[end + 1 .. value_end];
-                                @field(self.options, field.name) =
-                                    try parseValue(FieldType, value);
+                                try parseValue(
+                                    &@field(self.options, field.name),
+                                    allocator,
+                                    value,
+                                );
                                 const rem_start =
                                     @min(value_end + 1, remaining.len);
                                 remaining = remaining[rem_start..];
@@ -152,8 +165,11 @@ pub fn Soap(
                                 const value = iterator.next() orelse
                                     return ParseError.MissingValue;
 
-                                @field(self.options, field.name) =
-                                    try parseValue(FieldType, value);
+                                try parseValue(
+                                    &@field(self.options, field.name),
+                                    allocator,
+                                    value,
+                                );
 
                                 const new_rem = @min(end + 1, remaining.len);
                                 remaining = remaining[new_rem..];
@@ -216,8 +232,11 @@ pub fn Soap(
                                     ',',
                                 ) orelse args.len;
                                 const value = args[i + 2 .. end];
-                                @field(self.options, field.name) =
-                                    try parseValue(FieldType, value);
+                                try parseValue(
+                                    &@field(self.options, field.name),
+                                    allocator,
+                                    value,
+                                );
                                 i = end;
                             }
                             // Handle boolean flag with no value string.
@@ -229,8 +248,11 @@ pub fn Soap(
                                 const value = iterator.next() orelse
                                     return ParseError.MissingValue;
 
-                                @field(self.options, field.name) =
-                                    try parseValue(FieldType, value);
+                                try parseValue(
+                                    &@field(self.options, field.name),
+                                    allocator,
+                                    value,
+                                );
                             } else return ParseError.MissingValue;
 
                             self.filled.insert(
@@ -309,7 +331,14 @@ pub fn Soap(
             iterator: anytype,
             opts: ParseOptions,
         ) !?Separator {
-            return Inner.parse(self, options_map, undefined, iterator, opts);
+            return Inner.parse(
+                self,
+                options_map,
+                false,
+                undefined,
+                iterator,
+                opts,
+            );
         }
     };
 
@@ -320,6 +349,10 @@ pub fn Soap(
         filled: std.EnumSet(OptionField),
         /// Parsed positional parameters.
         positionals: [][]const u8,
+        _positionals_buffer: if (options.max_positionals) |max|
+            [max][]const u8
+        else
+            void = undefined,
 
         pub const OptionField = Inner.OptionField;
         pub const Separator = Inner.Separator;
@@ -331,11 +364,40 @@ pub fn Soap(
             return Inner.init(Self);
         }
 
+        fn deinitSlice(slice: anytype, allocator: std.mem.Allocator) void {
+            const ti = comptime @typeInfo(@TypeOf(slice)).pointer;
+            const child_ti = comptime @typeInfo(ti.child);
+            if (comptime child_ti == .pointer and
+                child_ti.pointer.size == .slice and
+                ti.child != []const u8)
+            {
+                for (slice) |item| {
+                    deinitSlice(item, allocator);
+                }
+            }
+            allocator.free(slice);
+        }
+
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             if (comptime options.max_positionals == null) {
                 if (self.positionals.len > 0) {
                     allocator.free(self.positionals);
                 }
+            }
+            const ti = comptime @typeInfo(@TypeOf(self.options)).@"struct";
+            inline for (ti.fields) |field| {
+                if (comptime field.is_comptime) comptime continue;
+                if (!self.filled.contains(@field(OptionField, field.name))) {
+                    comptime continue;
+                }
+                const field_ti = comptime @typeInfo(field.type);
+                if (comptime field_ti != .pointer or
+                    field_ti.pointer.size != .slice)
+                {
+                    comptime continue;
+                }
+                if (comptime field.type == []const u8) comptime continue;
+                deinitSlice(@field(self.options, field.name), allocator);
             }
             self.* = undefined;
         }
@@ -351,7 +413,14 @@ pub fn Soap(
             iterator: anytype,
             opts: ParseOptions,
         ) !?Separator {
-            return Inner.parse(self, options_map, allocator, iterator, opts);
+            return Inner.parse(
+                self,
+                options_map,
+                true,
+                allocator,
+                iterator,
+                opts,
+            );
         }
     };
 
@@ -367,36 +436,56 @@ const ParseError = error{
     MissingValue,
 };
 
-fn parseValue(T: type, value_string: []const u8) !T {
+fn parseValue(
+    result: anytype,
+    allocator: std.mem.Allocator,
+    value_string: []const u8,
+) !void {
+    const T = @typeInfo(@TypeOf(result)).pointer.child;
     const ti = @typeInfo(T);
-    val_parse: switch (ti) {
+
+    val_parse: switch (comptime ti) {
         .bool => {
             if (std.mem.eql(u8, "true", value_string)) {
-                return true;
-            }
-            if (std.mem.eql(u8, "false", value_string)) {
-                return false;
-            }
-            return error.InvalidBoolean;
+                result.* = true;
+            } else if (std.mem.eql(u8, "false", value_string)) {
+                result.* = false;
+            } else return error.InvalidBoolean;
         },
-        .int => {
-            return std.fmt.parseInt(T, value_string, 0);
-        },
-        .float => {
-            return std.fmt.parseFloat(T, value_string);
-        },
-        .@"enum" => {
-            return std.meta.stringToEnum(T, value_string) orelse
-                error.InvalidEnum;
-        },
+        .int => result.* = std.fmt.parseInt(T, value_string, 0),
+        .float => result.* = std.fmt.parseFloat(T, value_string),
+        .@"enum" => result.* = std.meta.stringToEnum(value_string) orelse
+            return error.InvalidEnum,
         .optional => |opt| {
             const child_ti = @typeInfo(opt.child);
             break :val_parse child_ti;
         },
-        .pointer => |_| {
-            if (T == []const u8) {
-                return value_string;
-            } else break :val_parse .void;
+        .pointer => |pointer| {
+            // Special case string types.
+            if (comptime T == []const u8) {
+                result.* = value_string;
+                return;
+            }
+
+            if (comptime pointer.size != .slice) {
+                break :val_parse .void;
+            }
+
+            // Only support non-nested slices (except when child is string).
+            const child_ti = @typeInfo(pointer.child);
+            if (comptime child_ti == .pointer and
+                child_ti.pointer.size == .slice and
+                pointer.child != []const u8)
+            {
+                @compileError("nested slice option types not supported");
+            }
+
+            result.* = try allocator.realloc(result.*, result.len + 1);
+            return parseValue(
+                &result.*[result.len - 1],
+                allocator,
+                value_string,
+            );
         },
         else => {
             @compileError(std.fmt.comptimePrint(
@@ -405,7 +494,6 @@ fn parseValue(T: type, value_string: []const u8) !T {
             ));
         },
     }
-    unreachable;
 }
 
 pub fn Diagnostics(T: type) type {
@@ -783,4 +871,39 @@ test "combined long options" {
     try std.testing.expect(parsed.options.flag1);
     try std.testing.expect(!parsed.options.flag2);
     try std.testing.expectEqualStrings("foo", parsed.options.option);
+}
+
+test "long option slice multiple redeclaration" {
+    const MyOpts = struct {
+        flags: []bool = &.{},
+        options: [][]const u8,
+    };
+
+    var parsed: Soap(MyOpts, .{ .max_positionals = 1 }) = .init();
+    defer parsed.deinit(std.testing.allocator);
+
+    var args = std.mem.splitScalar(
+        u8,
+        "--flags=true,opt foo --flags=false --opt=bar ",
+        ' ',
+    );
+    const separator = try parsed.parse(struct {
+        const flags = struct {
+            const long = "flags";
+        };
+        const nested_flags = struct {
+            const long = "nf";
+        };
+        const options = struct {
+            const long = "opt";
+        };
+    }, std.testing.allocator, &args, .{});
+
+    try std.testing.expectEqual(null, separator);
+    try std.testing.expectEqual(2, parsed.options.flags.len);
+    try std.testing.expect(parsed.options.flags[0]);
+    try std.testing.expect(!parsed.options.flags[1]);
+    try std.testing.expectEqual(2, parsed.options.options.len);
+    try std.testing.expectEqualStrings("foo", parsed.options.options[0]);
+    try std.testing.expectEqualStrings("bar", parsed.options.options[1]);
 }
