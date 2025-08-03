@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub fn Args(
+pub fn Soap(
     T: type,
     comptime options: struct {
         /// Stop parsing on encountering a separator (default "--").
@@ -439,7 +439,7 @@ test "initialization" {
     };
 
     { // Unlimited positionals.
-        var parsed: Args(MyOpts, .{}) = .init();
+        var parsed: Soap(MyOpts, .{}) = .init();
         defer parsed.deinit(allocator);
 
         try std.testing.expect(parsed.filled.contains(.optional_flag));
@@ -448,7 +448,7 @@ test "initialization" {
     }
 
     { // Limited positionals.
-        var parsed: Args(MyOpts, .{ .max_positionals = 2 }) = .init();
+        var parsed: Soap(MyOpts, .{ .max_positionals = 2 }) = .init();
 
         try std.testing.expect(parsed.filled.contains(.optional_flag));
         try std.testing.expect(!parsed.filled.contains(.required_string));
@@ -465,7 +465,7 @@ test "unknown option parsing error" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{}) = .init();
+    var parsed: Soap(MyOpts, .{}) = .init();
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "-o", ' ');
@@ -484,7 +484,7 @@ test "default name long option parsing" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{}) = .init();
+    var parsed: Soap(MyOpts, .{}) = .init();
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "--optional_flag", ' ');
@@ -508,7 +508,7 @@ test "short flag parsing" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{}) = .init();
+    var parsed: Soap(MyOpts, .{}) = .init();
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "-o", ' ');
@@ -531,7 +531,7 @@ test "short option boolean value parsing" {
             required_string: []const u8,
         };
 
-        var parsed: Args(MyOpts, .{}) = .init();
+        var parsed: Soap(MyOpts, .{}) = .init();
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "-o=true", ' ');
@@ -550,7 +550,7 @@ test "short option boolean value parsing" {
             required_string: []const u8,
         };
 
-        var parsed: Args(MyOpts, .{}) = .init();
+        var parsed: Soap(MyOpts, .{}) = .init();
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "-o=false", ' ');
@@ -574,7 +574,7 @@ test "long flag parsing" {
     };
 
     {
-        var parsed: Args(MyOpts, .{}) = .init();
+        var parsed: Soap(MyOpts, .{}) = .init();
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long", ' ');
@@ -598,7 +598,7 @@ test "long option boolean value parsing" {
             required_string: []const u8,
         };
 
-        var parsed: Args(MyOpts, .{}) = .init();
+        var parsed: Soap(MyOpts, .{}) = .init();
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long=true", ' ');
@@ -618,7 +618,7 @@ test "long option boolean value parsing" {
             required_string: []const u8,
         };
 
-        var parsed: Args(MyOpts, .{}) = .init();
+        var parsed: Soap(MyOpts, .{}) = .init();
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long=false", ' ');
@@ -640,7 +640,7 @@ test "short option string parsing" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{}) = .init();
+    var parsed: Soap(MyOpts, .{}) = .init();
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "-r foo", ' ');
@@ -665,7 +665,7 @@ test "allocated positionals" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{}) = .init();
+    var parsed: Soap(MyOpts, .{}) = .init();
     defer parsed.deinit(allocator);
 
     var args = std.mem.splitScalar(u8, "foo bar baz", ' ');
@@ -684,7 +684,7 @@ test "buffered positionals" {
         required_string: []const u8,
     };
 
-    var parsed: Args(MyOpts, .{ .max_positionals = 3 }) = .init();
+    var parsed: Soap(MyOpts, .{ .max_positionals = 3 }) = .init();
 
     var args = std.mem.splitScalar(u8, "foo bar baz", ' ');
     const separator = try parsed.parse({}, &args, .{});

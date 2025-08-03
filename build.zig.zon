@@ -1,6 +1,6 @@
 .{
-    .name = .args,
-    .fingerprint = 0x161b2ea2480f6acd,
+    .name = .soap,
+    .fingerprint = 0x37a677a9f1f6c724,
     .version = "0.0.1",
     .minimum_zig_version = "0.15.0-dev.1270+89cd42ee8",
     .paths = .{

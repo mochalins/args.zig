@@ -4,8 +4,8 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    const mod = b.addModule("args", .{
-        .root_source_file = b.path("src/args.zig"),
+    const mod = b.addModule("soap", .{
+        .root_source_file = b.path("src/soap.zig"),
         .target = target,
         .optimize = optimize,
     });
