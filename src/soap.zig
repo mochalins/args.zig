@@ -106,18 +106,16 @@ pub fn Soap(
                             {
                                 const field_map =
                                     comptime @field(options_map, field.name);
-                                if (comptime @hasDecl(field_map, "long") or
-                                    @hasField(field_map, "long"))
+                                if (comptime !@hasDecl(field_map, "long") and
+                                    !@hasField(field_map, "long"))
                                 {
-                                    if (!std.mem.eql(
-                                        u8,
-                                        @field(field_map, "long"),
-                                        arg,
-                                    )) {
-                                        comptime continue;
-                                    }
-                                } else {
-                                    // Skip if no "long" decl/field
+                                    comptime continue;
+                                }
+                                if (!std.mem.eql(
+                                    u8,
+                                    @field(field_map, "long"),
+                                    arg,
+                                )) {
                                     comptime continue;
                                 }
                             } else if (!std.mem.eql(u8, field.name, arg)) {
@@ -191,6 +189,9 @@ pub fn Soap(
                             if (comptime !@hasDecl(field_map, "short") and
                                 !@hasField(field_map, "short"))
                             {
+                                comptime continue;
+                            }
+                            if (@field(field_map, "short") != arg) {
                                 comptime continue;
                             }
 
