@@ -2,11 +2,11 @@
 **/**
 !*/
 
-
 # Whitelist
 !*.md
 !LICENSE
 !.gitignore
+!assets/**/*
 !build.zig
 !build.zig.zon
 

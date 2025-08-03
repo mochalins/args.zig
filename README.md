@@ -1,4 +1,6 @@
-# soap
+<h1 align="center">
+  <img src="assets/soap_banner.png" />
+</h1>
 
 > **S**tructured **O**ptions & **A**rguments **P**arser.
 
