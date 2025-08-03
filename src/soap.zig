@@ -206,9 +206,10 @@ pub fn Soap(
                             if (args.len > 2 and i < args.len - 2 and
                                 args[i + 1] == '=')
                             {
-                                const end = std.mem.indexOfScalar(
+                                const end = std.mem.indexOfScalarPos(
                                     u8,
-                                    args[i + 2 ..],
+                                    args,
+                                    i + 2,
                                     ',',
                                 ) orelse args.len;
                                 const value = args[i + 2 .. end];
@@ -695,4 +696,60 @@ test "buffered positionals" {
     try std.testing.expectEqualStrings("foo", parsed.positionals[0]);
     try std.testing.expectEqualStrings("bar", parsed.positionals[1]);
     try std.testing.expectEqualStrings("baz", parsed.positionals[2]);
+}
+
+test "combined short flags" {
+    const MyOpts = struct {
+        flag1: bool = false,
+        flag2: bool = false,
+        flag3: bool = false,
+    };
+
+    var parsed: Soap(MyOpts, .{ .max_positionals = 1 }) = .init();
+
+    var args = std.mem.splitScalar(u8, "-ac", ' ');
+    const separator = try parsed.parse(struct {
+        const flag1 = struct {
+            const short = 'a';
+        };
+        const flag2 = struct {
+            const short = 'b';
+        };
+        const flag3 = struct {
+            const short = 'c';
+        };
+    }, &args, .{});
+
+    try std.testing.expectEqual(null, separator);
+    try std.testing.expect(parsed.options.flag1);
+    try std.testing.expect(!parsed.options.flag2);
+    try std.testing.expect(parsed.options.flag3);
+}
+
+test "combined short options" {
+    const MyOpts = struct {
+        flag1: bool = false,
+        flag2: bool = false,
+        option: []const u8,
+    };
+
+    var parsed: Soap(MyOpts, .{ .max_positionals = 1 }) = .init();
+
+    var args = std.mem.splitScalar(u8, "-a=true,o foo", ' ');
+    const separator = try parsed.parse(struct {
+        const flag1 = struct {
+            const short = 'a';
+        };
+        const flag2 = struct {
+            const short = 'b';
+        };
+        const option = struct {
+            const short = 'o';
+        };
+    }, &args, .{});
+
+    try std.testing.expectEqual(null, separator);
+    try std.testing.expect(parsed.options.flag1);
+    try std.testing.expect(!parsed.options.flag2);
+    try std.testing.expectEqualStrings("foo", parsed.options.option);
 }
