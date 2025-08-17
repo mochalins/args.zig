@@ -24,10 +24,9 @@ pub fn Soap(
             separators: type = enum { @"--" },
             options_details: type = void,
         };
+    const OptionField = std.meta.FieldEnum(T);
 
     const Inner = struct {
-        const OptionField = std.meta.FieldEnum(T);
-
         pub fn init(Self: type) Self {
             var result: Self = .{
                 .options = undefined,
@@ -334,8 +333,6 @@ pub fn Soap(
         else
             void = undefined,
 
-        pub const OptionField = Inner.OptionField;
-
         const Self = @This();
 
         pub fn init() Self {
@@ -369,8 +366,6 @@ pub fn Soap(
             [max][]const u8
         else
             void = undefined,
-
-        pub const OptionField = Inner.OptionField;
 
         const Self = @This();
 
@@ -411,6 +406,14 @@ pub fn Soap(
                     comptime continue;
                 }
                 if (comptime field.type == []const u8) comptime continue;
+                if (comptime field.defaultValue()) |default_slice| {
+                    if (default_slice.ptr == @field(
+                        self.options,
+                        field.name,
+                    ).ptr) {
+                        comptime continue;
+                    }
+                }
                 deinitSlice(@field(self.options, field.name), allocator);
             }
             self.* = undefined;
