@@ -10,13 +10,23 @@ pub fn Soap(
         max_positionals: ?comptime_int = null,
     },
 ) type {
-    const Inner = struct {
-        const OptionField = std.meta.FieldEnum(T);
-        const ParseOptions = struct {
+    const ParseOptions = if (comptime needsAllocator(T) or
+        options.max_positionals == null)
+        struct {
+            allocator: std.mem.Allocator,
+            diagnostics: ?*Diagnostics(T) = null,
+            separators: type = enum { @"--" },
+            options_details: type = void,
+        }
+    else
+        struct {
             diagnostics: ?*Diagnostics(T) = null,
             separators: type = enum { @"--" },
             options_details: type = void,
         };
+
+    const Inner = struct {
+        const OptionField = std.meta.FieldEnum(T);
 
         pub fn init(Self: type) Self {
             var result: Self = .{
@@ -50,8 +60,6 @@ pub fn Soap(
 
         pub fn parse(
             self: anytype,
-            comptime needs_allocator: bool,
-            allocator: std.mem.Allocator,
             /// Arguments iterator. If using `std.process.ArgIterator`, skip
             /// the executable name that appears as the first argument.
             iterator: anytype,
@@ -61,11 +69,16 @@ pub fn Soap(
                 if (self.positionals.len >= max) return null;
             }
 
+            const allocator = if (comptime @hasField(ParseOptions, "allocator"))
+                opts.allocator
+            else
+                undefined;
+
             const OptionsMap = opts.options_details;
             const options_ti = @typeInfo(T).@"struct";
 
             var positionals: std.ArrayListUnmanaged([]const u8) = .empty;
-            if (comptime needs_allocator) {
+            if (comptime @hasField(ParseOptions, "allocator")) {
                 errdefer positionals.deinit(allocator);
             }
 
@@ -322,7 +335,6 @@ pub fn Soap(
             void = undefined,
 
         pub const OptionField = Inner.OptionField;
-        pub const ParseOptions = Inner.ParseOptions;
 
         const Self = @This();
 
@@ -340,8 +352,6 @@ pub fn Soap(
         ) !?opts.separators {
             return Inner.parse(
                 self,
-                false,
-                undefined,
                 iterator,
                 opts,
             );
@@ -361,7 +371,6 @@ pub fn Soap(
             void = undefined,
 
         pub const OptionField = Inner.OptionField;
-        pub const ParseOptions = Inner.ParseOptions;
 
         const Self = @This();
 
@@ -409,7 +418,6 @@ pub fn Soap(
 
         pub fn parse(
             self: *Self,
-            allocator: std.mem.Allocator,
             /// Arguments iterator. If using `std.process.ArgIterator`, skip
             /// the executable name that appears as the first argument.
             iterator: anytype,
@@ -417,8 +425,6 @@ pub fn Soap(
         ) !?opts.separators {
             return Inner.parse(
                 self,
-                true,
-                allocator,
                 iterator,
                 opts,
             );
@@ -552,56 +558,55 @@ test "initialization" {
 }
 
 test "unknown option parsing error" {
-    const allocator = std.testing.allocator;
-
     const MyOpts = struct {
         optional_flag: bool = false,
         required_string: []const u8,
     };
 
     var parsed: Soap(MyOpts, .{}) = .init();
-    defer parsed.deinit(allocator);
+    defer parsed.deinit(std.testing.allocator);
 
     var args = std.mem.splitScalar(u8, "-o", ' ');
 
     try std.testing.expectError(
         ParseError.UnknownOption,
-        parsed.parse(std.testing.allocator, &args, .{}),
+        parsed.parse(&args, .{
+            .allocator = std.testing.allocator,
+        }),
     );
 }
 
 test "default name long option parsing" {
-    const allocator = std.testing.allocator;
-
     const MyOpts = struct {
         optional_flag: bool = false,
         required_string: []const u8,
     };
 
     var parsed: Soap(MyOpts, .{}) = .init();
-    defer parsed.deinit(allocator);
+    defer parsed.deinit(std.testing.allocator);
 
     var args = std.mem.splitScalar(u8, "--optional_flag", ' ');
 
-    const separator = try parsed.parse(std.testing.allocator, &args, .{});
+    const separator = try parsed.parse(&args, .{
+        .allocator = std.testing.allocator,
+    });
 
     try std.testing.expectEqual(null, separator);
     try std.testing.expect(parsed.options.optional_flag);
 }
 
 test "short flag parsing" {
-    const allocator = std.testing.allocator;
-
     const MyOpts = struct {
         optional_flag: bool = false,
         required_string: []const u8,
     };
 
     var parsed: Soap(MyOpts, .{}) = .init();
-    defer parsed.deinit(allocator);
+    defer parsed.deinit(std.testing.allocator);
 
     var args = std.mem.splitScalar(u8, "-o", ' ');
-    const separator = try parsed.parse(std.testing.allocator, &args, .{
+    const separator = try parsed.parse(&args, .{
+        .allocator = std.testing.allocator,
         .options_details = struct {
             const optional_flag = struct {
                 const short = 'o';
@@ -614,8 +619,6 @@ test "short flag parsing" {
 }
 
 test "short option boolean value parsing" {
-    const allocator = std.testing.allocator;
-
     { // Parse true.
         const MyOpts = struct {
             optional_flag: bool = false,
@@ -623,10 +626,11 @@ test "short option boolean value parsing" {
         };
 
         var parsed: Soap(MyOpts, .{}) = .init();
-        defer parsed.deinit(allocator);
+        defer parsed.deinit(std.testing.allocator);
 
         var args = std.mem.splitScalar(u8, "-o=true", ' ');
-        const separator = try parsed.parse(std.testing.allocator, &args, .{
+        const separator = try parsed.parse(&args, .{
+            .allocator = std.testing.allocator,
             .options_details = struct {
                 const optional_flag = struct {
                     const short = 'o';
@@ -644,10 +648,11 @@ test "short option boolean value parsing" {
         };
 
         var parsed: Soap(MyOpts, .{}) = .init();
-        defer parsed.deinit(allocator);
+        defer parsed.deinit(std.testing.allocator);
 
         var args = std.mem.splitScalar(u8, "-o=false", ' ');
-        const separator = try parsed.parse(std.testing.allocator, &args, .{
+        const separator = try parsed.parse(&args, .{
+            .allocator = std.testing.allocator,
             .options_details = struct {
                 const optional_flag = struct {
                     const short = 'o';
@@ -673,7 +678,8 @@ test "long flag parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long", ' ');
-        const separator = try parsed.parse(std.testing.allocator, &args, .{
+        const separator = try parsed.parse(&args, .{
+            .allocator = std.testing.allocator,
             .options_details = struct {
                 const optional_flag = struct {
                     const long = "custom_long";
@@ -699,7 +705,8 @@ test "long option boolean value parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long=true", ' ');
-        const separator = try parsed.parse(std.testing.allocator, &args, .{
+        const separator = try parsed.parse(&args, .{
+            .allocator = std.testing.allocator,
             .options_details = struct {
                 const optional_flag = struct {
                     const long = "custom_long";
@@ -721,7 +728,8 @@ test "long option boolean value parsing" {
         defer parsed.deinit(allocator);
 
         var args = std.mem.splitScalar(u8, "--custom_long=false", ' ');
-        const separator = try parsed.parse(std.testing.allocator, &args, .{
+        const separator = try parsed.parse(&args, .{
+            .allocator = std.testing.allocator,
             .options_details = struct {
                 const optional_flag = struct {
                     const long = "custom_long";
@@ -735,17 +743,17 @@ test "long option boolean value parsing" {
 }
 
 test "short option string parsing" {
-    const allocator = std.testing.allocator;
     const MyOpts = struct {
         optional_flag: bool = false,
         required_string: []const u8,
     };
 
     var parsed: Soap(MyOpts, .{}) = .init();
-    defer parsed.deinit(allocator);
+    defer parsed.deinit(std.testing.allocator);
 
     var args = std.mem.splitScalar(u8, "-r foo", ' ');
-    const separator = try parsed.parse(std.testing.allocator, &args, .{
+    const separator = try parsed.parse(&args, .{
+        .allocator = std.testing.allocator,
         .options_details = struct {
             const required_string = struct {
                 const short = 'r';
@@ -762,17 +770,18 @@ test "short option string parsing" {
 }
 
 test "allocated positionals" {
-    const allocator = std.testing.allocator;
     const MyOpts = struct {
         optional_flag: bool = false,
         required_string: []const u8,
     };
 
     var parsed: Soap(MyOpts, .{}) = .init();
-    defer parsed.deinit(allocator);
+    defer parsed.deinit(std.testing.allocator);
 
     var args = std.mem.splitScalar(u8, "foo bar baz", ' ');
-    const separator = try parsed.parse(std.testing.allocator, &args, .{});
+    const separator = try parsed.parse(&args, .{
+        .allocator = std.testing.allocator,
+    });
 
     try std.testing.expectEqual(null, separator);
     try std.testing.expectEqual(3, parsed.positionals.len);
@@ -903,7 +912,8 @@ test "long option slice multiple redeclaration" {
         "--flags=true,true --opt foo --flags false --opt=bar ",
         ' ',
     );
-    const separator = try parsed.parse(std.testing.allocator, &args, .{
+    const separator = try parsed.parse(&args, .{
+        .allocator = std.testing.allocator,
         .options_details = struct {
             const flags = struct {
                 const long = "flags";
